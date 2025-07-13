@@ -30,9 +30,9 @@ API Keys 可以从以下途径获取：
 1. **FreeAI Chat Playground 账户**：
    - 登录 [FreeAI Chat Playground](https://freeaichatplayground.com)
    - 发送一条聊天请求后在网络选项卡内聊天请求中找apiKey
-   - ```
+```
    {"id":"xxx-xxx-xxx-xxx-xxx","messages":[{"role":"user","content":"你好","parts":[{"type":"text","text":"你好"}]}],"model":"GPT 4o mini","config":{"temperature":0.7,"maxTokens":150},"apiKey":"ai-xxx-xxx-xxx-xxx-xxxxxx"}
-    ```
+```
    - 格式通常为 `ai-xxx-xxx-xxx-xxx-xxxxxx`
    - 设置环境变量或当做apikey请求时，去掉前缀`ai-`
 
