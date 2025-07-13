@@ -4,7 +4,7 @@ import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 const FREEAI_API_BASE = "https://freeaichatplayground.com/api/v1";
 const DEFAULT_MODEL = "Deepseek R1";
 const DEFAULT_TEMPERATURE = 0.7;
-const DEFAULT_MAX_TOKENS = 128000; // 128k tokens
+const DEFAULT_MAX_TOKENS = 128000;
 
 // 从环境变量获取API keys
 const ENV_API_KEYS = Deno.env.get("apikeys")?.split(",") || [];
@@ -75,16 +75,16 @@ function transformModelsToOpenAIFormat(models: any[]) {
   };
 }
 
-// 解析 SSE 格式的响应
-async function parseSSEResponse(response: Response) {
+// 解析 FreeAI 特有的 SSE 格式响应
+async function parseFreeAISSE(response: Response) {
   const reader = response.body?.getReader();
   if (!reader) {
     throw new Error("No readable stream in response");
   }
   
-  let content = "";
-  let id = `chatcmpl-${Date.now()}`;
+  let combinedContent = "";
   let finishReason = "stop";
+  let usage = { promptTokens: 0, completionTokens: 0 };
   
   try {
     while (true) {
@@ -92,68 +92,54 @@ async function parseSSEResponse(response: Response) {
       if (done) break;
       
       const chunk = new TextDecoder().decode(value);
-      content += chunk;
-    }
-    
-    // 解析所有 SSE 消息
-    const messages = content.split('\n\n')
-      .filter(msg => msg.trim().startsWith('data:'))
-      .map(msg => {
-        const jsonStr = msg.replace('data:', '').trim();
-        try {
-          return JSON.parse(jsonStr);
-        } catch (e) {
-          console.warn("Failed to parse SSE message:", jsonStr);
-          return null;
-        }
-      })
-      .filter(Boolean);
-    
-    // 找到最后一条完整消息
-    const lastCompleteMessage = messages.findLast((msg: any) => 
-      msg.choices && msg.choices[0] && msg.choices[0].message && msg.choices[0].message.content
-    );
-    
-    if (lastCompleteMessage) {
-      id = lastCompleteMessage.id || id;
-      if (lastCompleteMessage.choices && 
-          lastCompleteMessage.choices[0] && 
-          lastCompleteMessage.choices[0].finish_reason) {
-        finishReason = lastCompleteMessage.choices[0].finish_reason;
-      }
+      const lines = chunk.split('\n');
       
-      return {
-        id,
-        content: lastCompleteMessage.choices[0].message.content,
-        finish_reason: finishReason,
-        usage: lastCompleteMessage.usage || null
-      };
-    }
-    
-    // 如果没有找到完整消息，尝试从所有消息中提取内容
-    let combinedContent = "";
-    for (const msg of messages) {
-      if (msg.choices && msg.choices[0] && msg.choices[0].delta && msg.choices[0].delta.content) {
-        combinedContent += msg.choices[0].delta.content;
-      } else if (msg.choices && msg.choices[0] && msg.choices[0].message && msg.choices[0].message.content) {
-        combinedContent += msg.choices[0].message.content;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        
+        if (line.startsWith('0:"')) {
+          // 提取内容部分
+          const content = line.slice(3, -1); // 去掉 0:" 和结尾的 "
+          combinedContent += content;
+        } else if (line.startsWith('e:{') || line.startsWith('d:{')) {
+          // 提取结束信息和用量
+          try {
+            const data = JSON.parse(line.slice(2));
+            if (data.finishReason) {
+              finishReason = data.finishReason;
+            }
+            if (data.usage) {
+              usage = data.usage;
+            }
+          } catch (e) {
+            console.warn("Failed to parse finish message:", line);
+          }
+        }
       }
     }
     
     return {
-      id,
-      content: combinedContent || "No content found in response",
+      id: `chatcmpl-${Date.now()}`,
+      content: combinedContent,
       finish_reason: finishReason,
-      usage: null
+      usage: {
+        prompt_tokens: usage.promptTokens || 0,
+        completion_tokens: usage.completionTokens || 0,
+        total_tokens: (usage.promptTokens || 0) + (usage.completionTokens || 0)
+      }
     };
     
   } catch (error) {
     console.error("Error parsing SSE response:", error);
     return {
-      id,
+      id: `chatcmpl-${Date.now()}`,
       content: "Error parsing response: " + error.message,
       finish_reason: "error",
-      usage: null
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0
+      }
     };
   }
 }
@@ -161,36 +147,11 @@ async function parseSSEResponse(response: Response) {
 // 发送聊天请求到 freeaichatplayground
 async function sendChatRequest(modelName: string, messages: any[], apiKey: string, temperature?: number, maxTokens?: number) {
   try {
-    const formattedMessages = messages.map((msg, index) => ({
-      id: `${Date.now() + index}`,
+    const formattedMessages = messages.map((msg) => ({
       role: msg.role,
       content: msg.content,
-      parts: [{ type: "text", text: msg.content }],
-      model: {
-        id: "", // 这个ID会在下面被填充
-        name: modelName,
-        icon: "",
-        provider: "",
-        contextWindow: 63920
-      }
+      parts: [{ type: "text", text: msg.content }]
     }));
-
-    // 获取模型列表以找到正确的ID
-    const models = await fetchModels(apiKey);
-    const selectedModel = models.find((m: any) => m.name === modelName);
-    
-    if (!selectedModel) {
-      throw new Error(`Model "${modelName}" not found`);
-    }
-    
-    // 填充模型信息
-    formattedMessages.forEach(msg => {
-      if (msg.model) {
-        msg.model.id = selectedModel.id;
-        msg.model.icon = selectedModel.icon;
-        msg.model.provider = selectedModel.provider;
-      }
-    });
 
     const requestBody = {
       model: modelName,
@@ -199,7 +160,7 @@ async function sendChatRequest(modelName: string, messages: any[], apiKey: strin
         temperature: temperature !== undefined ? temperature : DEFAULT_TEMPERATURE,
         maxTokens: maxTokens !== undefined ? maxTokens : DEFAULT_MAX_TOKENS
       },
-      apiKey: `ai-${apiKey}`
+      apiKey: apiKey.startsWith('ai-') ? apiKey : `ai-${apiKey}`
     };
 
     const response = await fetch(`${FREEAI_API_BASE}/chat/completions`, {
@@ -218,8 +179,8 @@ async function sendChatRequest(modelName: string, messages: any[], apiKey: strin
       throw new Error(`Chat completion failed: ${response.status} - ${errorText}`);
     }
 
-    // 处理 SSE 流式响应
-    const parsedResponse = await parseSSEResponse(response);
+    // 处理 FreeAI 特有的 SSE 响应
+    const parsedResponse = await parseFreeAISSE(response);
     return parsedResponse;
   } catch (error) {
     console.error("Error in chat completion:", error);
@@ -230,7 +191,7 @@ async function sendChatRequest(modelName: string, messages: any[], apiKey: strin
 // 转换为 OpenAI 格式的聊天响应
 function transformChatResponseToOpenAIFormat(response: any, modelName: string) {
   return {
-    id: response.id || `chatcmpl-${Date.now()}`,
+    id: response.id,
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
     model: modelName,
@@ -241,14 +202,10 @@ function transformChatResponseToOpenAIFormat(response: any, modelName: string) {
           role: "assistant",
           content: response.content,
         },
-        finish_reason: response.finish_reason || "stop",
+        finish_reason: response.finish_reason,
       },
     ],
-    usage: response.usage || {
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-    },
+    usage: response.usage
   };
 }
 
@@ -262,36 +219,12 @@ async function handleStreamRequest(
   maxTokens?: number
 ) {
   const encoder = new TextEncoder();
-  const formattedMessages = messages.map((msg, index) => ({
-    id: `${Date.now() + index}`,
+  
+  const formattedMessages = messages.map((msg) => ({
     role: msg.role,
     content: msg.content,
-    parts: [{ type: "text", text: msg.content }],
-    model: {
-      id: "", // 这个ID会在下面被填充
-      name: modelName,
-      icon: "",
-      provider: "",
-      contextWindow: 63920
-    }
+    parts: [{ type: "text", text: msg.content }]
   }));
-
-  // 获取模型列表以找到正确的ID
-  const models = await fetchModels(apiKey);
-  const selectedModel = models.find((m: any) => m.name === modelName);
-  
-  if (!selectedModel) {
-    throw new Error(`Model "${modelName}" not found`);
-  }
-  
-  // 填充模型信息
-  formattedMessages.forEach(msg => {
-    if (msg.model) {
-      msg.model.id = selectedModel.id;
-      msg.model.icon = selectedModel.icon;
-      msg.model.provider = selectedModel.provider;
-    }
-  });
 
   const requestBody = {
     model: modelName,
@@ -300,7 +233,7 @@ async function handleStreamRequest(
       temperature: temperature !== undefined ? temperature : DEFAULT_TEMPERATURE,
       maxTokens: maxTokens !== undefined ? maxTokens : DEFAULT_MAX_TOKENS
     },
-    apiKey: `ai-${apiKey}`
+    apiKey: apiKey.startsWith('ai-') ? apiKey : `ai-${apiKey}`
   };
 
   const response = await fetch(`${FREEAI_API_BASE}/chat/completions`, {
@@ -353,48 +286,52 @@ async function handleStreamRequest(
           const chunk = new TextDecoder().decode(value);
           buffer += chunk;
           
-          // 处理缓冲区中的所有完整 SSE 消息
-          const messages = buffer.split('\n\n');
-          buffer = messages.pop() || ""; // 保留最后一个可能不完整的消息
+          // 处理缓冲区中的所有行
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || "";
           
-          for (const msg of messages) {
-            if (!msg.trim().startsWith('data:')) continue;
+          for (const line of lines) {
+            if (!line.trim()) continue;
             
-            try {
-              const jsonStr = msg.replace('data:', '').trim();
-              const data = JSON.parse(jsonStr);
+            if (line.startsWith('0:"')) {
+              // 提取内容部分并创建流式块
+              const content = line.slice(3, -1); // 去掉 0:" 和结尾的 "
               
-              if (data.choices && data.choices[0]) {
-                // 转换为 OpenAI 流式格式
-                const openAIChunk = {
-                  id: chatId,
-                  object: "chat.completion.chunk",
-                  created: Math.floor(Date.now() / 1000),
-                  model: modelName,
-                  choices: [{
-                    index: 0,
-                    delta: {},
-                    finish_reason: data.choices[0].finish_reason || null
-                  }]
-                };
-                
-                // 提取内容
-                if (data.choices[0].delta && data.choices[0].delta.content) {
-                  openAIChunk.choices[0].delta.content = data.choices[0].delta.content;
-                } else if (data.choices[0].message && data.choices[0].message.content) {
-                  openAIChunk.choices[0].delta.content = data.choices[0].message.content;
-                }
-                
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify(openAIChunk)}\n\n`));
-                
-                // 如果是最后一条消息，发送 [DONE]
-                if (data.choices[0].finish_reason) {
+              const chunk = {
+                id: chatId,
+                object: "chat.completion.chunk",
+                created: Math.floor(Date.now() / 1000),
+                model: modelName,
+                choices: [{
+                  index: 0,
+                  delta: { content },
+                  finish_reason: null
+                }]
+              };
+              
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+            } else if (line.startsWith('e:{') || line.startsWith('d:{')) {
+              // 处理结束消息
+              try {
+                const data = JSON.parse(line.slice(2));
+                if (data.finishReason) {
+                  const endChunk = {
+                    id: chatId,
+                    object: "chat.completion.chunk",
+                    created: Math.floor(Date.now() / 1000),
+                    model: modelName,
+                    choices: [{
+                      index: 0,
+                      delta: {},
+                      finish_reason: data.finishReason
+                    }]
+                  };
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify(endChunk)}\n\n`));
                   controller.enqueue(encoder.encode("data: [DONE]\n\n"));
                 }
+              } catch (e) {
+                console.warn("Failed to parse finish message:", line);
               }
-            } catch (e) {
-              console.warn("Failed to parse SSE message:", msg);
-              continue;
             }
           }
         }
