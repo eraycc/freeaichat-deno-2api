@@ -97,8 +97,11 @@ async function parseFreeAISSE(response: Response) {
         if (!line.trim()) continue;
         
         if (line.startsWith('0:"')) {
-          // 提取内容部分
-          const content = line.slice(3, -1); // 去掉 0:" 和结尾的 "
+          // 提取内容部分并处理转义字符
+          const content = line.slice(3, -1) // 去掉 0:" 和结尾的 "
+            .replace(/\\n/g, '\n')  // 将 \\n 转换为实际的换行符
+            .replace(/\\"/g, '"')   // 处理转义的双引号
+            .replace(/\\\\/g, '\\'); // 处理转义的反斜杠
           combinedContent += content;
         } else if (line.startsWith('e:{') || line.startsWith('d:{')) {
           // 提取结束信息和用量
@@ -293,8 +296,11 @@ async function handleStreamRequest(
             if (!line.trim()) continue;
             
             if (line.startsWith('0:"')) {
-              // 提取内容部分并创建流式块
-              const content = line.slice(3, -1); // 去掉 0:" 和结尾的 "
+              // 提取内容部分并处理转义字符
+              const content = line.slice(3, -1) // 去掉 0:" 和结尾的 "
+                .replace(/\\n/g, '\n')  // 将 \\n 转换为实际的换行符
+                .replace(/\\"/g, '"')   // 处理转义的双引号
+                .replace(/\\\\/g, '\\'); // 处理转义的反斜杠
               
               const chunk = {
                 id: chatId,
