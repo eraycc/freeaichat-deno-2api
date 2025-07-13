@@ -1,4 +1,4 @@
-// freeai_proxy.ts
+// main.ts
 import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 
 const FREEAI_API_BASE = "https://freeaichatplayground.com/api/v1";
@@ -199,7 +199,7 @@ async function sendChatRequest(modelName: string, messages: any[], apiKey: strin
         temperature: temperature !== undefined ? temperature : DEFAULT_TEMPERATURE,
         maxTokens: maxTokens !== undefined ? maxTokens : DEFAULT_MAX_TOKENS
       },
-      apiKey: `${apiKey}`
+      apiKey: `ai-${apiKey}`
     };
 
     const response = await fetch(`${FREEAI_API_BASE}/chat/completions`, {
@@ -300,7 +300,7 @@ async function handleStreamRequest(
       temperature: temperature !== undefined ? temperature : DEFAULT_TEMPERATURE,
       maxTokens: maxTokens !== undefined ? maxTokens : DEFAULT_MAX_TOKENS
     },
-    apiKey: `${apiKey}`
+    apiKey: `ai-${apiKey}`
   };
 
   const response = await fetch(`${FREEAI_API_BASE}/chat/completions`, {
