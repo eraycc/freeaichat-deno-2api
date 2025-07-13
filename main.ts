@@ -61,16 +61,15 @@ async function fetchModels(apiKey: string) {
 
 // 转换为 OpenAI 格式的模型列表
 function transformModelsToOpenAIFormat(models: any[]) {
+  const currentTimestamp = Math.floor(Date.now() / 1000);
   return {
     object: "list",
     data: models.map(model => ({
       id: model.name,
       object: "model",
-      created: new Date(model.createdAt).getTime() / 1000,
+      created: currentTimestamp,
       owned_by: model.provider,
-      permission: [],
-      root: model.name,
-      parent: null,
+      root: model.name
     })),
   };
 }
